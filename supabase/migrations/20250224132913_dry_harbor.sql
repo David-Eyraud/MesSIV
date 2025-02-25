@@ -1,0 +1,2 @@
+-- Cette migration a été fusionnée dans curly_gate.sql
+-- Laissé vide intentionnellement pour préserver l'historique
