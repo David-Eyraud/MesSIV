@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Filter, PencilLine } from 'lucide-react';
+import { Filter, ChevronDown, PencilLine } from 'lucide-react';
 import { useAuthStore } from '../lib/store';
 import { supabase } from '../lib/supabase';
-import { format, subDays } from 'date-fns';
+import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import ScrollToTop from '../components/ScrollToTop';
 import InstructorExerciseCard from '../components/InstructorExerciseCard';
@@ -30,6 +30,8 @@ interface Student {
     date: string;
     location: string;
     school: string;
+    glider_brand: string;
+    glider_model: string;
   };
 }
 
@@ -62,7 +64,11 @@ const Evaluate = () => {
   const [instructorRatings, setInstructorRatings] = useState<InstructorRatings>({});
   const [showFilters, setShowFilters] = useState(false);
   const [showOnlyEvaluated, setShowOnlyEvaluated] = useState(false);
-  const [startDate, setStartDate] = useState<Date>(() => subDays(new Date(), 3));
+  const [startDate, setStartDate] = useState<Date>(() => {
+    const date = new Date();
+    date.setDate(date.getDate() - 3);
+    return date;
+  });
   const [endDate, setEndDate] = useState<Date>(() => new Date());
   const [showStartCalendar, setShowStartCalendar] = useState(false);
   const [showEndCalendar, setShowEndCalendar] = useState(false);
@@ -77,45 +83,64 @@ const Evaluate = () => {
     const loadStudents = async () => {
       setLoading(true);
       try {
-        const { data: coursesData, error: coursesError } = await supabase
+        const { data: courses, error: coursesError } = await supabase
           .from('courses')
           .select(`
             id,
             date,
             location,
             school,
-            profiles!inner(
-              id,
-              first_name,
-              last_name,
-              email
-            )
+            glider_brand,
+            glider_model,
+            user_id
           `)
           .eq('instructor', 'David Eyraud')
           .gte('date', format(startDate, 'yyyy-MM-dd'))
-          .lte('date', format(endDate, 'yyyy-MM-dd'))
-          .order('date')
-          .limit(50);
+          .lte('date', format(endDate, 'yyyy-MM-dd'));
 
-        if (coursesError) throw coursesError;
+        if (coursesError) {
+          console.error('Erreur lors de la récupération des stages:', coursesError);
+          throw coursesError;
+        }
 
-        // Formater les données pour l'interface
-        const formattedStudents = coursesData?.map(course => ({
-          id: course.profiles.id,
-          first_name: course.profiles.first_name,
-          last_name: course.profiles.last_name,
-          email: course.profiles.email,
-          course: {
-            id: course.id,
-            date: course.date,
-            location: course.location,
-            school: course.school
-          }
-        })) || [];
+        if (!courses || courses.length === 0) {
+          setStudents([]);
+          return;
+        }
+
+        const { data: profiles, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, first_name, last_name, email')
+          .in('id', courses.map(c => c.user_id));
+
+        if (profilesError) {
+          console.error('Erreur lors de la récupération des profils:', profilesError);
+          throw profilesError;
+        }
+
+        const formattedStudents = courses.map(course => {
+          const profile = profiles?.find(p => p.id === course.user_id);
+          if (!profile) return null;
+
+          return {
+            id: profile.id,
+            first_name: profile.first_name,
+            last_name: profile.last_name,
+            email: profile.email,
+            course: {
+              id: course.id,
+              date: course.date,
+              location: course.location,
+              school: course.school,
+              glider_brand: course.glider_brand,
+              glider_model: course.glider_model
+            }
+          };
+        }).filter(Boolean) as Student[];
 
         setStudents(formattedStudents);
       } catch (error) {
-        console.error('Erreur lors du chargement des élèves:', error);
+        console.error('Erreur lors du chargement des données:', error);
       } finally {
         setLoading(false);
       }
@@ -215,9 +240,33 @@ const Evaluate = () => {
         instructor_rating_right: side === 'right' ? value : existingRating.right || 0
       };
 
-      const { error } = await supabase
+      // Récupérer d'abord l'évaluation existante
+      const { data, error: selectError } = await supabase
         .from('instructor_evaluations')
-        .upsert([ratingData]);
+        .select('id')
+        .match({
+          student_id: selectedStudent.id,
+          course_id: selectedStudent.course.id,
+          exercise_id: exerciseId
+        });
+
+      if (selectError) throw selectError;
+
+      let error;
+      if (data && data.length > 0) {
+        // Si l'évaluation existe, faire un update
+        const { error: updateError } = await supabase
+          .from('instructor_evaluations')
+          .update(ratingData)
+          .eq('id', data[0].id);
+        error = updateError;
+      } else {
+        // Sinon, faire un insert
+        const { error: insertError } = await supabase
+          .from('instructor_evaluations')
+          .insert([ratingData]);
+        error = insertError;
+      }
 
       if (error) throw error;
 
@@ -295,142 +344,85 @@ const Evaluate = () => {
         </p>
       </div>
 
-      <div className="bg-white rounded-lg shadow-md p-3 mb-3 sticky top-0 z-10">
-        <div className="mb-3">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Période
-          </label>
-          
-          <div className="flex items-center gap-2 mb-2">
-            <div className="relative flex-1">
-              <div 
-                onClick={() => setShowStartCalendar(!showStartCalendar)}
-                className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md cursor-pointer hover:border-primary"
-              >
-                <span className="text-sm text-gray-600">Du</span>
-                <span className="text-sm font-medium">
-                  {format(startDate, 'dd MMMM yyyy', { locale: fr })}
-                </span>
-              </div>
-              {showStartCalendar && (
-                <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-gray-200 p-2 z-20">
-                  <input
-                    type="date"
-                    value={format(startDate, 'yyyy-MM-dd')}
-                    onChange={(e) => {
-                      setStartDate(new Date(e.target.value));
-                      setShowStartCalendar(false);
-                    }}
-                    className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring-primary"
-                  />
-                </div>
-              )}
+      {/* Sélecteur de dates - non sticky */}
+      <div className="bg-white rounded-lg shadow-md p-3 mb-3">
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Période
+        </label>
+        
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <div 
+              onClick={() => setShowStartCalendar(!showStartCalendar)}
+              className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md cursor-pointer hover:border-primary"
+            >
+              <span className="text-sm text-gray-600">Du</span>
+              <span className="text-sm font-medium">
+                {format(startDate, 'dd MMMM yyyy', { locale: fr })}
+              </span>
             </div>
+            {showStartCalendar && (
+              <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-gray-200 p-2 z-20">
+                <input
+                  type="date"
+                  value={format(startDate, 'yyyy-MM-dd')}
+                  onChange={(e) => {
+                    setStartDate(new Date(e.target.value));
+                    setShowStartCalendar(false);
+                  }}
+                  className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring-primary"
+                />
+              </div>
+            )}
+          </div>
 
-            <div className="relative flex-1">
-              <div 
-                onClick={() => setShowEndCalendar(!showEndCalendar)}
-                className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md cursor-pointer hover:border-primary"
-              >
-                <span className="text-sm text-gray-600">au</span>
-                <span className="text-sm font-medium">
-                  {format(endDate, 'dd MMMM yyyy', { locale: fr })}
-                </span>
-              </div>
-              {showEndCalendar && (
-                <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-gray-200 p-2 z-20">
-                  <input
-                    type="date"
-                    value={format(endDate, 'yyyy-MM-dd')}
-                    onChange={(e) => {
-                      setEndDate(new Date(e.target.value));
-                      setShowEndCalendar(false);
-                    }}
-                    className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring-primary"
-                  />
-                </div>
-              )}
+          <div className="relative flex-1">
+            <div 
+              onClick={() => setShowEndCalendar(!showEndCalendar)}
+              className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md cursor-pointer hover:border-primary"
+            >
+              <span className="text-sm text-gray-600">au</span>
+              <span className="text-sm font-medium">
+                {format(endDate, 'dd MMMM yyyy', { locale: fr })}
+              </span>
             </div>
+            {showEndCalendar && (
+              <div className="absolute top-full left-0 mt-1 bg-white rounded-lg shadow-lg border border-gray-200 p-2 z-20">
+                <input
+                  type="date"
+                  value={format(endDate, 'yyyy-MM-dd')}
+                  onChange={(e) => {
+                    setEndDate(new Date(e.target.value));
+                    setShowEndCalendar(false);
+                  }}
+                  className="w-full rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring-primary"
+                />
+              </div>
+            )}
           </div>
         </div>
+      </div>
 
-        {loading ? (
-          <div className="text-center py-4">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
-          </div>
-        ) : students.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Date
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Prénom
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Nom
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Email
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Lieu
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    École
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {students.map((student) => (
-                  <tr key={`${student.id}-${student.course.id}`} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {format(new Date(student.course.date), 'dd/MM/yyyy')}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {student.first_name}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {student.last_name}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {student.email}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {student.course.location}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {student.course.school}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      <button
-                        onClick={() => setSelectedStudent(student)}
-                        className="text-primary hover:text-primary-600 font-medium"
-                      >
-                        Évaluer
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-center py-8">
-            <div className="w-12 h-12 mx-auto mb-2 text-gray-400">
-              <PencilLine className="w-full h-full" />
-            </div>
-            <h3 className="text-lg font-medium text-gray-900 mb-1">Aucun élève trouvé</h3>
-            <p className="text-gray-500">
-              Aucun élève n'a de stage enregistré pour cette période
-            </p>
-          </div>
-        )}
+      {/* Sélecteur de pilote - sticky */}
+      <div className="bg-white rounded-lg shadow-md p-3 mb-3 sticky top-0 z-10">
+        <div className="relative">
+          <select
+            className="w-full appearance-none rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring-primary pr-10"
+            onChange={(e) => {
+              const student = students.find(s => `${s.id}-${s.course.id}` === e.target.value);
+              setSelectedStudent(student || null);
+            }}
+            value={selectedStudent ? `${selectedStudent.id}-${selectedStudent.course.id}` : ""}
+          >
+            {!selectedStudent && <option value="" disabled>Choisir un pilote...</option>}
+            {students.map((student) => (
+              <option key={`${student.id}-${student.course.id}`} value={`${student.id}-${student.course.id}`}>
+                {student.first_name} {student.last_name} - {student.course.glider_brand} {student.course.glider_model}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" size={20} />
+        </div>
       </div>
 
       {selectedStudent && (
